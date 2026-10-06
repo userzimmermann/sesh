@@ -15,9 +15,11 @@ import (
 	"github.com/joshmedeski/sesh/v2/dir"
 	"github.com/joshmedeski/sesh/v2/execwrap"
 	"github.com/joshmedeski/sesh/v2/focuser"
+	"github.com/joshmedeski/sesh/v2/forge"
 	"github.com/joshmedeski/sesh/v2/formatter"
 	"github.com/joshmedeski/sesh/v2/git"
 	"github.com/joshmedeski/sesh/v2/github"
+	"github.com/joshmedeski/sesh/v2/gitlab"
 	"github.com/joshmedeski/sesh/v2/home"
 	"github.com/joshmedeski/sesh/v2/icon"
 	"github.com/joshmedeski/sesh/v2/jj"
@@ -53,7 +55,8 @@ type BaseDeps struct {
 	Replacer   replacer.Replacer
 	Git        git.Git
 	Jj         jj.Jj
-	Github     github.Github
+	Github     forge.Forge
+	Gitlab     forge.Forge
 	Focuser    focuser.Focuser
 	Dir        dir.Dir
 	Zoxide     zoxide.Zoxide
@@ -74,6 +77,7 @@ type Deps struct {
 	Icon          icon.Icon
 	Previewer     previewer.Previewer
 	Cloner        cloner.Cloner
+	ForgeResolver forge.Resolver
 	Worktree      worktree.Worktree
 	Browser       browser.Browser
 	Mkdirer       mkdirer.Mkdirer
@@ -93,6 +97,7 @@ func NewBaseDeps() *BaseDeps {
 
 	g := git.NewGit(sh)
 	gh := github.NewGithub(sh, g)
+	gl := gitlab.NewGitlab(sh, g)
 	fo := focuser.NewFocuser(runtime, sh)
 	jjr := jj.NewJj(os, sh)
 	d := dir.NewDir(os, g, jjr, path)
@@ -110,6 +115,7 @@ func NewBaseDeps() *BaseDeps {
 		Git:        g,
 		Jj:         jjr,
 		Github:     gh,
+		Gitlab:     gl,
 		Focuser:    fo,
 		Dir:        d,
 		Tmuxinator: ti,
@@ -134,10 +140,63 @@ func (b *BaseDeps) BuildAll(configPath string) (*Deps, error) {
 	l := ls.NewLs(config, b.Shell)
 	ic := icon.NewIcon(config)
 	fm := formatter.NewFormatter(ic)
-	issueCache := cache.NewNamespace[github.Issue](
+	issueCache := cache.NewNamespace[forge.Issue](
 		worktree.IssueCacheName, worktree.IssueCacheVersion, worktree.IssueCacheTTL,
 	).WithMissingTTL(worktree.IssueCacheMissingTTL)
-	li := lister.NewLister(config, b.Home, t, b.Zoxide, b.Tmuxinator, fm, issueCache)
+
+	// Built before the lister, which needs it to key worktree titles the same way the
+	// worktree command writes them. The path closure below captures wt, assigned
+	// further down; it only runs on demand, so the order is safe.
+	forgeFromConfig := func(cfg model.WorktreeConfig) (forge.Forge, error) {
+		switch cfg.Forge {
+		// The default:
+		case model.ForgeGithub, "":
+			return b.Github, nil
+
+		case model.ForgeGitlab:
+			return b.Gitlab, nil
+		}
+		return nil, fmt.Errorf("unsupported forge %q", cfg.Forge)
+	}
+	var wt worktree.Worktree
+	fr := forge.NewResolver(
+		forgeFromConfig,
+		// The path-based forge resolver falls back to git remote detection when no worktree config matches.
+		func(path string) (forge.Forge, error) {
+			mainWt, err := wt.MainWorktree(path)
+			if err != nil {
+				return nil, err
+			}
+			// First check if path is in a worktree config.
+			for _, cfg := range config.WorktreeConfigs {
+				expanded, err := b.Home.ExpandPath(cfg.Path)
+				if err != nil {
+					return nil, err
+				}
+				if expanded == mainWt {
+					return forgeFromConfig(cfg)
+				}
+			}
+			ok, host, err := b.Git.RemoteHost(path, "origin")
+			if err != nil {
+				return nil, err
+			}
+			if !ok {
+				return nil, fmt.Errorf("could not determine git remote host for %q", path)
+			}
+			switch host {
+			case "github.com":
+				return b.Github, nil
+
+			case "gitlab.com":
+				return b.Gitlab, nil
+
+			default:
+				return nil, fmt.Errorf("unsupported remote host %q", host)
+			}
+		},
+	)
+	li := lister.NewLister(config, b.Home, t, b.Zoxide, b.Tmuxinator, fm, fr, issueCache)
 
 	usedLister := li
 	var cachedLi *lister.CachingLister
@@ -153,7 +212,8 @@ func (b *BaseDeps) BuildAll(configPath string) (*Deps, error) {
 	p := previewer.NewPreviewer(usedLister, t, ic, b.Dir, b.Home, l, config, b.Shell)
 	cl := cloner.NewCloner(c, b.Git, b.Jj)
 	br := browser.NewBrowser(b.Runtime, b.Shell, config.Browser)
-	wt := worktree.NewWorktree(config, b.Git, b.Github, c, br, b.Home, b.Os, b.Path, issueCache)
+
+	wt = worktree.NewWorktree(config, b.Git, fr, c, br, b.Home, b.Os, b.Path, issueCache)
 	// Removing an entry from the picker has to be written through to the cache,
 	// or the next launch reads back the directory that was just removed. Nil
 	// when caching is off: the picker refetches every time anyway.
@@ -178,6 +238,7 @@ func (b *BaseDeps) BuildAll(configPath string) (*Deps, error) {
 		Previewer:     p,
 		Cloner:        cl,
 		Worktree:      wt,
+		ForgeResolver: fr,
 		Browser:       br,
 		Mkdirer:       mk,
 	}, nil

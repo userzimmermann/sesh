@@ -16,7 +16,7 @@ func TestPrViewFound(t *testing.T) {
 		Cmd("gh", "pr", "view", "2345", "--repo", "nutiliti/nutiliti", "--json", "author,closingIssuesReferences,title,body").
 		Return(`{"author":{"login":"octocat"},"closingIssuesReferences":[{"number":42}],"title":"Fix","body":"closes #7"}`, nil)
 	g := NewGithub(s, git.NewMockGit(t))
-	pr, found, err := g.PrView("nutiliti/nutiliti", 2345)
+	pr, found, err := g.PrView("github.com", "nutiliti/nutiliti", 2345)
 	require.NoError(t, err)
 	assert.True(t, found)
 	assert.Equal(t, "octocat", pr.Author)
@@ -30,16 +30,16 @@ func TestPrViewNotAPr(t *testing.T) {
 		Cmd("gh", "pr", "view", "7", "--repo", "nutiliti/nutiliti", "--json", "author,closingIssuesReferences,title,body").
 		Return("", nil)
 	g := NewGithub(s, git.NewMockGit(t))
-	_, found, err := g.PrView("nutiliti/nutiliti", 7)
+	_, found, err := g.PrView("github.com", "nutiliti/nutiliti", 7)
 	require.NoError(t, err)
 	assert.False(t, found)
 }
 
 func TestCurrentUser(t *testing.T) {
 	s := shell.NewMockShell(t)
-	s.EXPECT().Cmd("gh", "api", "user", "--jq", ".login").Return("me", nil)
+	s.EXPECT().Cmd("gh", "api", "user", "--hostname", "github.com", "--jq", ".login").Return("me", nil)
 	g := NewGithub(s, git.NewMockGit(t))
-	user, err := g.CurrentUser()
+	user, err := g.CurrentUser("github.com")
 	require.NoError(t, err)
 	assert.Equal(t, "me", user)
 }
@@ -50,7 +50,7 @@ func TestPrCheckout(t *testing.T) {
 		CmdInDir("/repo/w/2345", "gh", "pr", "checkout", "2345", "--repo", "nutiliti/nutiliti").
 		Return("", nil)
 	g := NewGithub(s, git.NewMockGit(t))
-	_, err := g.PrCheckout("/repo/w/2345", "nutiliti/nutiliti", 2345)
+	_, err := g.PrCheckout("/repo/w/2345", "github.com", "nutiliti/nutiliti", 2345)
 	require.NoError(t, err)
 }
 
@@ -81,7 +81,7 @@ func TestIssue(t *testing.T) {
 		gh := NewGithub(mockShell, mockGit)
 		path := "/Users/josh/c/sesh"
 		mockGit.On("CurrentBranch", path).Return(true, "feat/400-status-bar", nil)
-		mockShell.On("Cmd", "gh", "issue", "view", "400", "--json", "number,title,state").
+		mockShell.On("CmdInDir", path, "gh", "issue", "view", "400", "--json", "number,title,state").
 			Return(`{"number":400,"state":"OPEN","title":"Dynamic tmux status bar"}`, nil)
 
 		issue, found, err := gh.Issue(path)
@@ -126,7 +126,7 @@ func TestIssue(t *testing.T) {
 		gh := NewGithub(mockShell, mockGit)
 		path := "/Users/josh/c/sesh"
 		mockGit.On("CurrentBranch", path).Return(true, "400", nil)
-		mockShell.On("Cmd", "gh", "issue", "view", "400", "--json", "number,title,state").
+		mockShell.On("CmdInDir", path, "gh", "issue", "view", "400", "--json", "number,title,state").
 			Return("", fmt.Errorf("gh: not found"))
 
 		_, found, err := gh.Issue(path)
@@ -135,18 +135,18 @@ func TestIssue(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("not found when gh returns malformed json", func(t *testing.T) {
+	t.Run("reports a decode failure rather than not-found", func(t *testing.T) {
 		mockShell := new(shell.MockShell)
 		mockGit := new(git.MockGit)
 		gh := NewGithub(mockShell, mockGit)
 		path := "/Users/josh/c/sesh"
 		mockGit.On("CurrentBranch", path).Return(true, "400", nil)
-		mockShell.On("Cmd", "gh", "issue", "view", "400", "--json", "number,title,state").
+		mockShell.On("CmdInDir", path, "gh", "issue", "view", "400", "--json", "number,title,state").
 			Return("not json", nil)
 
 		_, found, err := gh.Issue(path)
 
 		assert.False(t, found)
-		assert.NoError(t, err)
+		assert.Error(t, err)
 	})
 }
