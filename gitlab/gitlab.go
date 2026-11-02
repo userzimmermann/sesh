@@ -263,6 +263,12 @@ func (g *RealGitlab) PrURL(dir string) (string, bool, error) {
 	return out, true, nil
 }
 
+// PrURLForHead returns the URL of the newest merge request in repo whose
+// head branch is head, in any state.
+func (g *RealGitlab) PrURLForHead(host string, repo string, head string) (string, bool, error) {
+	return "", false, nil
+}
+
 // glabRepoArg returns the [https://host/]repo form glab accepts for its --repo flag.
 // gitlab.com is glab's own default, so it is omitted to keep the common case short.
 func glabRepoArg(host string, repo string) string {

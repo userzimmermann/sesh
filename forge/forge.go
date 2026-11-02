@@ -22,6 +22,11 @@ type PullRequest struct {
 	ClosingIssues []int
 	Title         string
 	Body          string
+	URL           string
+	HeadRefName   string
+	HeadOwner     string
+	HeadRepo      string
+	IsFork        bool
 }
 
 // Issue is the forge-neutral domain entity for issues in worktree workflows.
@@ -59,6 +64,10 @@ type Forge interface {
 	// PrURL returns the URL of the pull/merge request for the branch checked out in dir.
 	// found is false (with nil error) when the branch has no PR/MR.
 	PrURL(dir string) (url string, found bool, err error)
+
+	// PrURLForHead returns the URL of the newest pull/merge request in repo whose
+	// head branch is head, in any state.
+	PrURLForHead(host string, repo string, head string) (url string, found bool, err error)
 
 	// PrCheckout checks out the pull/merge request inside dir (a worktree).
 	PrCheckout(dir string, host string, repo string, number int) (string, error)

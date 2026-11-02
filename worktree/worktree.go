@@ -13,6 +13,7 @@ import (
 	"github.com/joshmedeski/sesh/v2/forge"
 	"github.com/joshmedeski/sesh/v2/git"
 	"github.com/joshmedeski/sesh/v2/home"
+	"github.com/joshmedeski/sesh/v2/jj"
 	"github.com/joshmedeski/sesh/v2/model"
 	"github.com/joshmedeski/sesh/v2/oswrap"
 	"github.com/joshmedeski/sesh/v2/pathwrap"
@@ -38,6 +39,7 @@ type Worktree interface {
 type RealWorktree struct {
 	config    model.Config
 	git       git.Git
+	jj        jj.Jj
 	forges    forge.Resolver
 	connector connector.Connector
 	browser   browser.Browser
@@ -52,6 +54,7 @@ type RealWorktree struct {
 func NewWorktree(
 	config model.Config,
 	g git.Git,
+	j jj.Jj,
 	f forge.Resolver,
 	c connector.Connector,
 	b browser.Browser,
@@ -60,7 +63,7 @@ func NewWorktree(
 	p pathwrap.Path,
 	issues *cache.Namespace[forge.Issue],
 ) Worktree {
-	return &RealWorktree{config, g, f, c, b, h, os, p, issues}
+	return &RealWorktree{config, g, j, f, c, b, h, os, p, issues}
 }
 
 func (w *RealWorktree) ForgeFromConfig(cfg model.WorktreeConfig) (forge.Forge, error) {
@@ -75,6 +78,7 @@ func (w *RealWorktree) ForgeFromPath(path string) (forge.Forge, error) {
 type connectPlan struct {
 	key        int  // issue or PR/MR number used for the worktree dir/branch
 	prCheckout bool // key is a PR/MR number ==> create detached + `gh pr checkout`/`glab mr checkout` (vs. new branch)
+	pr         forge.PullRequest
 }
 
 func (w *RealWorktree) Connect(opts model.WorktreeConnectOpts) (string, error) {
@@ -96,8 +100,13 @@ func (w *RealWorktree) Connect(opts model.WorktreeConnectOpts) (string, error) {
 		return "", err
 	}
 
+	isJj := w.isJj(repoPath)
 	if fetchEnabled(cfg) {
-		_, _ = w.git.Fetch(repoPath)
+		if isJj {
+			_, _ = w.jj.Fetch(repoPath)
+		} else {
+			_, _ = w.git.Fetch(repoPath)
+		}
 	}
 
 	plan, err := w.planConnect(cfg, opts)
@@ -119,7 +128,11 @@ func (w *RealWorktree) Connect(opts model.WorktreeConnectOpts) (string, error) {
 	created := false
 	if _, statErr := w.os.Stat(target); statErr == nil {
 		// Existing worktree: refresh a PR checkout, then reconnect.
-		if plan.prCheckout {
+		if plan.prCheckout && isJj {
+			if err := w.jjRefreshPr(repoPath, target, plan.pr); err != nil {
+				return "", err
+			}
+		} else if plan.prCheckout {
 			if _, err := f.PrCheckout(target, host, cfg.Repo, opts.Number); err != nil {
 				return "", err
 			}
@@ -130,7 +143,11 @@ func (w *RealWorktree) Connect(opts model.WorktreeConnectOpts) (string, error) {
 		if err := w.os.MkdirAll(root, 0o755); err != nil {
 			return "", err
 		}
-		if plan.prCheckout {
+		if isJj {
+			if err := w.jjAdd(cfg, repoPath, target, plan); err != nil {
+				return "", err
+			}
+		} else if plan.prCheckout {
 			if _, err := w.git.WorktreeAddDetached(repoPath, target, baseBranch(cfg)); err != nil {
 				return "", err
 			}
@@ -232,7 +249,7 @@ func (w *RealWorktree) planConnect(cfg model.WorktreeConfig, opts model.Worktree
 	}
 	if pr.Author != "" && pr.Author != me {
 		// Foreign PR: detached checkout keyed on the PR number.
-		return connectPlan{key: opts.Number, prCheckout: true}, nil
+		return connectPlan{key: opts.Number, prCheckout: true, pr: pr}, nil
 	}
 
 	// Own PR: prefer the closing issue; else scan title/body for #N.
@@ -245,7 +262,68 @@ func (w *RealWorktree) planConnect(cfg model.WorktreeConfig, opts model.Worktree
 	if issue > 0 {
 		return connectPlan{key: issue, prCheckout: false}, nil
 	}
-	return connectPlan{key: opts.Number, prCheckout: true}, nil
+	return connectPlan{key: opts.Number, prCheckout: true, pr: pr}, nil
+}
+
+func (w *RealWorktree) isJj(dir string) bool {
+	info, err := w.os.Stat(w.path.Join(dir, ".jj"))
+	return err == nil && info.IsDir()
+}
+
+func (w *RealWorktree) jjAdd(cfg model.WorktreeConfig, repoPath, target string, plan connectPlan) error {
+	name := strconv.Itoa(plan.key)
+	if !plan.prCheckout {
+		if _, err := w.jj.WorkspaceAdd(repoPath, name, jjRevset(baseBranch(cfg)), target); err != nil {
+			return err
+		}
+		_, err := w.jj.BookmarkCreate(target, renderBranch(cfg, plan.key), "@")
+		return err
+	}
+	rev, err := w.jjFetchPr(repoPath, plan.pr)
+	if err != nil {
+		return err
+	}
+	_, err = w.jj.WorkspaceAdd(repoPath, name, rev, target)
+	return err
+}
+
+func (w *RealWorktree) jjRefreshPr(repoPath, target string, pr forge.PullRequest) error {
+	rev, err := w.jjFetchPr(repoPath, pr)
+	if err != nil {
+		return err
+	}
+	_, err = w.jj.New(target, rev)
+	return err
+}
+
+func (w *RealWorktree) jjFetchPr(repoPath string, pr forge.PullRequest) (string, error) {
+	if pr.HeadRefName == "" {
+		return "", fmt.Errorf("could not find the head branch of the pull request")
+	}
+	remote := "origin"
+	if pr.IsFork {
+		remote = pr.HeadOwner
+		_, _ = w.jj.RemoteAdd(repoPath, remote, fmt.Sprintf("https://github.com/%s/%s.git", pr.HeadOwner, pr.HeadRepo))
+	}
+	if _, err := w.jj.Fetch(repoPath, "--remote", remote, "--branch", pr.HeadRefName); err != nil {
+		return "", err
+	}
+	return remoteRevset(pr.HeadRefName, remote), nil
+}
+
+func remoteRevset(branch, remote string) string {
+	return fmt.Sprintf("%q@%q", branch, remote)
+}
+
+func jjRevset(base string) string {
+	if strings.ContainsAny(base, "@()") {
+		return base
+	}
+	remote, branch, ok := strings.Cut(base, "/")
+	if !ok {
+		return base
+	}
+	return remoteRevset(branch, remote)
 }
 
 func (w *RealWorktree) resolveConfig(repoOverride string) (model.WorktreeConfig, error) {
@@ -262,7 +340,7 @@ func (w *RealWorktree) resolveConfig(repoOverride string) (model.WorktreeConfig,
 	if err != nil {
 		return model.WorktreeConfig{}, err
 	}
-	mainWt, err := w.MainWorktree(cwd)
+	mainWt, err := w.repoRoot(cwd)
 	if err != nil {
 		return model.WorktreeConfig{}, err
 	}
@@ -276,6 +354,13 @@ func (w *RealWorktree) resolveConfig(repoOverride string) (model.WorktreeConfig,
 		}
 	}
 	return model.WorktreeConfig{}, fmt.Errorf("no [[worktree]] config matches current repo %q", mainWt)
+}
+
+func (w *RealWorktree) repoRoot(cwd string) (string, error) {
+	if isJj, _, repo := w.jj.Roots(cwd); isJj {
+		return repo, nil
+	}
+	return w.MainWorktree(cwd)
 }
 
 // MainWorktree returns the primary worktree path (first porcelain entry).
@@ -337,6 +422,9 @@ func (w *RealWorktree) BrowseURL(sessionPath string, pr bool) (string, error) {
 		}
 		return f.IssueURL(host, cfg.Repo, number, false), nil
 	}
+	if w.isJj(dir) {
+		return w.jjPrURL(cfg, number)
+	}
 	if isExplicitPr {
 		return f.IssueURL(host, cfg.Repo, number, true), nil
 	}
@@ -348,6 +436,33 @@ func (w *RealWorktree) BrowseURL(sessionPath string, pr bool) (string, error) {
 		return "", fmt.Errorf("no pull request found for worktree %d", number)
 	}
 	return url, nil
+}
+
+func (w *RealWorktree) jjPrURL(cfg model.WorktreeConfig, number int) (string, error) {
+	if cfg.Repo == "" {
+		return "", fmt.Errorf(
+			"the [[worktree]] block for path %q is missing `repo = \"org/repo\"`", cfg.Path)
+	}
+	f, err := w.ForgeFromConfig(cfg)
+	if err != nil {
+		return "", err
+	}
+	host, err := forge.Host(cfg)
+	if err != nil {
+		return "", err
+	}
+	url, found, err := f.PrURLForHead(host, cfg.Repo, renderBranch(cfg, number))
+	if err != nil || found {
+		return url, err
+	}
+	pr, found, err := f.PrView(host, cfg.Repo, number)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", fmt.Errorf("no pull request found for worktree %d", number)
+	}
+	return pr.URL, nil
 }
 
 // worktreeAt finds the [[worktree]] block whose root contains path, and the

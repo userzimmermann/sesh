@@ -8,10 +8,13 @@ import (
 	"github.com/joshmedeski/sesh/v2/connector"
 	"github.com/joshmedeski/sesh/v2/forge"
 	"github.com/joshmedeski/sesh/v2/git"
+	"github.com/joshmedeski/sesh/v2/github"
 	"github.com/joshmedeski/sesh/v2/home"
+	"github.com/joshmedeski/sesh/v2/jj"
 	"github.com/joshmedeski/sesh/v2/model"
 	"github.com/joshmedeski/sesh/v2/oswrap"
 	"github.com/joshmedeski/sesh/v2/pathwrap"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
@@ -48,6 +51,7 @@ func nuConfig() model.Config {
 
 func TestConnectIssueWithRepoOverride(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGh := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -61,6 +65,7 @@ func TestConnectIssueWithRepoOverride(t *testing.T) {
 	// path expansion: "/repo" has no ~, but home.ExpandPath calls os.UserHomeDir
 	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
 	mOs.EXPECT().ExpandEnv("/repo").Return("/repo").Maybe()
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 
 	// Not a PR => issue path
 	mGh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 2345).Return(forge.PullRequest{}, false, nil)
@@ -76,13 +81,14 @@ func TestConnectIssueWithRepoOverride(t *testing.T) {
 		Connect(wPath, model.ConnectOpts{Switch: true, Command: "nu_install"}).
 		Return("", nil)
 
-	w := NewWorktree(nuConfig(), mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(nuConfig(), mGit, mJj, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 2345, Repo: "nutiliti/nutiliti", Switch: true})
 	require.NoError(t, err)
 }
 
 func TestConnectOwnPrWithClosingIssue(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGh := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -95,6 +101,7 @@ func TestConnectOwnPrWithClosingIssue(t *testing.T) {
 
 	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
 	mOs.EXPECT().ExpandEnv("/repo").Return("/repo").Maybe()
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 
 	// It is a PR authored by me, closing issue 42
 	mGh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 100).
@@ -108,13 +115,14 @@ func TestConnectOwnPrWithClosingIssue(t *testing.T) {
 	mGit.EXPECT().WorktreeAdd("/repo", wPath, "jam/42-1", "origin/main").Return("", nil)
 	mConn.EXPECT().Connect(wPath, model.ConnectOpts{Switch: true, Command: "nu_install"}).Return("", nil)
 
-	w := NewWorktree(nuConfig(), mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(nuConfig(), mGit, mJj, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 100, Repo: "nutiliti/nutiliti", Switch: true})
 	require.NoError(t, err)
 }
 
 func TestConnectForeignPrDetachCheckout(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGh := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -127,6 +135,7 @@ func TestConnectForeignPrDetachCheckout(t *testing.T) {
 
 	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
 	mOs.EXPECT().ExpandEnv("/repo").Return("/repo").Maybe()
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 
 	// PR authored by someone else
 	mGh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 200).
@@ -141,13 +150,14 @@ func TestConnectForeignPrDetachCheckout(t *testing.T) {
 	mGh.EXPECT().PrCheckout(wPath, "github.com", "nutiliti/nutiliti", 200).Return("", nil)
 	mConn.EXPECT().Connect(wPath, model.ConnectOpts{Switch: true, Command: "nu_install"}).Return("", nil)
 
-	w := NewWorktree(nuConfig(), mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(nuConfig(), mGit, mJj, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 200, Repo: "nutiliti/nutiliti", Switch: true})
 	require.NoError(t, err)
 }
 
 func TestConnectResolvesConfigFromCwd(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGh := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -160,10 +170,12 @@ func TestConnectResolvesConfigFromCwd(t *testing.T) {
 
 	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
 	mOs.EXPECT().ExpandEnv("/repo").Return("/repo").Maybe()
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 
 	// No --repo override: resolveConfig detects the repo from cwd via
 	// `git worktree list --porcelain` on the main worktree.
 	mOs.EXPECT().Getwd().Return(wPath, nil)
+	mJj.EXPECT().Roots(wPath).Return(false, "", "")
 	mGit.EXPECT().WorktreeList(wPath).Return(true,
 		"worktree /repo\nHEAD abc\nbranch refs/heads/main\n\n"+
 			"worktree /repo/w/2345\nHEAD def\nbranch refs/heads/jam/2345-1\n",
@@ -178,13 +190,14 @@ func TestConnectResolvesConfigFromCwd(t *testing.T) {
 	mGit.EXPECT().WorktreeAdd("/repo", wPath, "jam/2345-1", "origin/main").Return("", nil)
 	mConn.EXPECT().Connect(wPath, model.ConnectOpts{Switch: true, Command: "nu_install"}).Return("", nil)
 
-	w := NewWorktree(nuConfig(), mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(nuConfig(), mGit, mJj, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 2345, Switch: true})
 	require.NoError(t, err)
 }
 
 func TestConnectOwnPrFirstIssueRefFallback(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGh := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -197,6 +210,7 @@ func TestConnectOwnPrFirstIssueRefFallback(t *testing.T) {
 
 	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
 	mOs.EXPECT().ExpandEnv("/repo").Return("/repo").Maybe()
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 
 	// PR authored by me, no ClosingIssues, but body references "#7"
 	mGh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 100).
@@ -210,13 +224,14 @@ func TestConnectOwnPrFirstIssueRefFallback(t *testing.T) {
 	mGit.EXPECT().WorktreeAdd("/repo", wPath, "jam/7-1", "origin/main").Return("", nil)
 	mConn.EXPECT().Connect(wPath, model.ConnectOpts{Switch: true, Command: "nu_install"}).Return("", nil)
 
-	w := NewWorktree(nuConfig(), mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(nuConfig(), mGit, mJj, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 100, Repo: "nutiliti/nutiliti", Switch: true})
 	require.NoError(t, err)
 }
 
 func TestConnectExistingWorktreeRunsStartupCommand(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGh := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -229,6 +244,7 @@ func TestConnectExistingWorktreeRunsStartupCommand(t *testing.T) {
 	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
 	mOs.EXPECT().ExpandEnv("/repo").Return("/repo").Maybe()
 	mGh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 2345).Return(forge.PullRequest{}, false, nil)
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 	mGh.EXPECT().WorktreeName(2345, false).Return("2345")
 
 	// The worktree is already there, so nothing is created — and the command is
@@ -238,13 +254,14 @@ func TestConnectExistingWorktreeRunsStartupCommand(t *testing.T) {
 		Connect(wPath, model.ConnectOpts{Switch: true, Command: "nu_setup"}).
 		Return("", nil)
 
-	w := NewWorktree(nuConfig(), mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(nuConfig(), mGit, mJj, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 2345, Repo: "nutiliti/nutiliti", Switch: true})
 	require.NoError(t, err)
 }
 
 func TestConnectExistingPrWorktreeRunsStartupCommand(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGh := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -256,6 +273,7 @@ func TestConnectExistingPrWorktreeRunsStartupCommand(t *testing.T) {
 
 	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
 	mOs.EXPECT().ExpandEnv("/repo").Return("/repo").Maybe()
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 
 	// Foreign PR whose worktree already exists: the checkout is refreshed, which
 	// is not the same thing as creating it.
@@ -270,13 +288,14 @@ func TestConnectExistingPrWorktreeRunsStartupCommand(t *testing.T) {
 		Connect(wPath, model.ConnectOpts{Switch: true, Command: "nu_setup"}).
 		Return("", nil)
 
-	w := NewWorktree(nuConfig(), mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(nuConfig(), mGit, mJj, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 200, Repo: "nutiliti/nutiliti", Switch: true})
 	require.NoError(t, err)
 }
 
 func TestConnectCreateWithoutCreateCommandRunsNothing(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGh := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -292,6 +311,7 @@ func TestConnectCreateWithoutCreateCommandRunsNothing(t *testing.T) {
 
 	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
 	mOs.EXPECT().ExpandEnv("/repo").Return("/repo").Maybe()
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 	mGh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 2345).Return(forge.PullRequest{}, false, nil)
 	mGh.EXPECT().WorktreeName(2345, false).Return("2345")
 	mOs.EXPECT().Stat(wPath).Return(nil, os.ErrNotExist)
@@ -304,13 +324,14 @@ func TestConnectCreateWithoutCreateCommandRunsNothing(t *testing.T) {
 		Connect(wPath, model.ConnectOpts{Switch: true, Command: ""}).
 		Return("", nil)
 
-	w := NewWorktree(cfg, mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(cfg, mGit, mJj, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 2345, Repo: "nutiliti/nutiliti", Switch: true})
 	require.NoError(t, err)
 }
 
 func TestConnectNoConfigMatch(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGh := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -318,9 +339,96 @@ func TestConnectNoConfigMatch(t *testing.T) {
 	h := home.NewHome(mOs)
 	p := pathwrap.NewPath()
 
-	w := NewWorktree(nuConfig(), mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(nuConfig(), mGit, mJj, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 1, Repo: "unknown/repo"})
 	require.Error(t, err)
+}
+
+type dirInfo struct{ os.FileInfo }
+
+func (dirInfo) IsDir() bool { return true }
+
+type jjFixture struct {
+	jj   *jj.MockJj
+	gh   *github.MockGithub
+	conn *connector.MockConnector
+	os   *oswrap.MockOs
+	w    Worktree
+}
+
+func newJjFixture(t *testing.T, targetExists bool) jjFixture {
+	p := pathwrap.NewPath()
+	mJj := jj.NewMockJj(t)
+	mGh := github.NewMockGithub(t)
+	mConn := connector.NewMockConnector(t)
+	mOs := oswrap.NewMockOs(t)
+	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
+	mOs.EXPECT().ExpandEnv("/repo").Return("/repo").Maybe()
+	mOs.EXPECT().Stat(p.FromSlash("/repo/.jj")).Return(dirInfo{}, nil)
+	mOs.EXPECT().MkdirAll(p.FromSlash("/repo/w"), mock.Anything).Return(nil).Maybe()
+	mOs.EXPECT().Stat(mock.Anything).RunAndReturn(func(string) (os.FileInfo, error) {
+		if targetExists {
+			return dirInfo{}, nil
+		}
+		return nil, os.ErrNotExist
+	})
+	w := NewWorktree(nuConfig(), git.NewMockGit(t), mJj, forgeResolver(mGh), mConn, browser.NewMockBrowser(t),
+		home.NewHome(mOs), mOs, p, testIssueCache(t))
+	return jjFixture{mJj, mGh, mConn, mOs, w}
+}
+
+func TestConnectJjIssueAddsWorkspaceAndBookmark(t *testing.T) {
+	wPath := pathwrap.NewPath().FromSlash("/repo/w/2345")
+	f := newJjFixture(t, false)
+	f.gh.EXPECT().WorktreeName(2345, false).Return("2345")
+	f.gh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 2345).Return(github.PullRequest{}, false, nil)
+	f.jj.EXPECT().WorkspaceAdd("/repo", "2345", `"main"@"origin"`, wPath).Return("", nil)
+	f.jj.EXPECT().BookmarkCreate(wPath, "jam/2345-1", "@").Return("", nil)
+	f.conn.EXPECT().Connect(wPath, model.ConnectOpts{Switch: true, Command: "nu_install"}).Return("", nil)
+
+	_, err := f.w.Connect(model.WorktreeConnectOpts{Number: 2345, Repo: "nutiliti/nutiliti", Switch: true})
+	require.NoError(t, err)
+}
+
+func TestConnectJjForkPrAddsRemoteAndFetchesBranch(t *testing.T) {
+	wPath := pathwrap.NewPath().FromSlash("/repo/w/200")
+	f := newJjFixture(t, false)
+	f.gh.EXPECT().WorktreeName(200, true).Return("200")
+	f.gh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 200).Return(github.PullRequest{
+		Author: "octocat", HeadRefName: "fix-a", HeadOwner: "octocat", HeadRepo: "nutiliti", IsFork: true,
+	}, true, nil)
+	f.gh.EXPECT().CurrentUser("github.com").Return("me", nil)
+	f.jj.EXPECT().RemoteAdd("/repo", "octocat", "https://github.com/octocat/nutiliti.git").Return("", nil)
+	f.jj.EXPECT().Fetch("/repo", "--remote", "octocat", "--branch", "fix-a").Return("", nil)
+	f.jj.EXPECT().WorkspaceAdd("/repo", "200", `"fix-a"@"octocat"`, wPath).Return("", nil)
+	f.conn.EXPECT().Connect(wPath, model.ConnectOpts{Switch: true, Command: "nu_install"}).Return("", nil)
+
+	_, err := f.w.Connect(model.WorktreeConnectOpts{Number: 200, Repo: "nutiliti/nutiliti", Switch: true})
+	require.NoError(t, err)
+}
+
+func TestConnectJjExistingPrMovesToUpdatedHead(t *testing.T) {
+	wPath := pathwrap.NewPath().FromSlash("/repo/w/200")
+	f := newJjFixture(t, true)
+	f.gh.EXPECT().WorktreeName(200, true).Return("200")
+	f.gh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 200).Return(github.PullRequest{
+		Author: "octocat", HeadRefName: "fix-a", HeadOwner: "nutiliti", HeadRepo: "nutiliti",
+	}, true, nil)
+	f.gh.EXPECT().CurrentUser("github.com").Return("me", nil)
+	f.jj.EXPECT().Fetch("/repo", "--remote", "origin", "--branch", "fix-a").Return("", nil)
+	f.jj.EXPECT().New(wPath, `"fix-a"@"origin"`).Return("", nil)
+	f.conn.EXPECT().Connect(wPath, model.ConnectOpts{Switch: true, Command: "nu_setup"}).Return("", nil)
+
+	_, err := f.w.Connect(model.WorktreeConnectOpts{Number: 200, Repo: "nutiliti/nutiliti", Switch: true})
+	require.NoError(t, err)
+}
+
+func TestJjRevset(t *testing.T) {
+	assert.Equal(t, `"main"@"origin"`, jjRevset("origin/main"))
+	assert.Equal(t, `"feat/x"@"upstream"`, jjRevset("upstream/feat/x"))
+	assert.Equal(t, "main@origin", jjRevset("main@origin"))
+	assert.Equal(t, "trunk()", jjRevset("trunk()"))
+	assert.Equal(t, "main", jjRevset("main"))
 }
 
 func TestConnectWithCommandOpensNewWindow(t *testing.T) {
@@ -339,6 +447,7 @@ func TestConnectWithCommandOpensNewWindow(t *testing.T) {
 		mOs.EXPECT().ExpandEnv("/repo").Return("/repo").Maybe()
 		mGh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 2345).Return(forge.PullRequest{}, false, nil)
 		mGh.EXPECT().WorktreeName(2345, false).Return("2345")
+		mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 		mOs.EXPECT().Stat(wPath).Return(nil, nil)
 
 		mConn.EXPECT().
@@ -354,7 +463,7 @@ func TestConnectWithCommandOpensNewWindow(t *testing.T) {
 			}).
 			Return("nutiliti/2345:3", nil)
 
-		w := NewWorktree(nuConfig(), mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+		w := NewWorktree(nuConfig(), mGit, jj.NewMockJj(t), forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 		_, err := w.Connect(model.WorktreeConnectOpts{
 			Number:     2345,
 			Repo:       "nutiliti/nutiliti",
@@ -381,6 +490,7 @@ func TestConnectBackgroundWithoutCommand(t *testing.T) {
 	mOs.EXPECT().ExpandEnv("/repo").Return("/repo").Maybe()
 	mGh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 2345).Return(forge.PullRequest{}, false, nil)
 	mGh.EXPECT().WorktreeName(2345, false).Return("2345")
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 	mOs.EXPECT().Stat(wPath).Return(nil, os.ErrNotExist)
 	mOs.EXPECT().MkdirAll(wRoot, mock.Anything).Return(nil)
 	mGit.EXPECT().WorktreeAdd("/repo", wPath, "jam/2345-1", "origin/main").Return("", nil)
@@ -388,13 +498,14 @@ func TestConnectBackgroundWithoutCommand(t *testing.T) {
 		Connect(wPath, model.ConnectOpts{Command: "nu_install", Background: true}).
 		Return("nutiliti/2345", nil)
 
-	w := NewWorktree(nuConfig(), mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(nuConfig(), mGit, jj.NewMockJj(t), forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 2345, Repo: "nutiliti/nutiliti", Background: true})
 	require.NoError(t, err)
 }
 
 func TestConnectGitHubCustomHost(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGh := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -420,6 +531,7 @@ func TestConnectGitHubCustomHost(t *testing.T) {
 
 	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
 	mOs.EXPECT().ExpandEnv("/enterprise-repo").Return("/enterprise-repo").Maybe()
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/enterprise-repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 
 	mGh.EXPECT().PrView("github.example.com", "enterprise/repo", 55).Return(forge.PullRequest{}, false, nil)
 	mGh.EXPECT().WorktreeName(55, false).Return("55")
@@ -429,13 +541,14 @@ func TestConnectGitHubCustomHost(t *testing.T) {
 	mGit.EXPECT().WorktreeAdd("/enterprise-repo", wPath, "feature/55", "origin/main").Return("", nil)
 	mConn.EXPECT().Connect(wPath, model.ConnectOpts{Switch: true, Command: "init_script"}).Return("", nil)
 
-	w := NewWorktree(cfg, mGit, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(cfg, mGit, mJj, forgeResolver(mGh), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 55, Repo: "enterprise/repo", Switch: true})
 	require.NoError(t, err)
 }
 
 func TestConnectGitLabCustomHost(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGl := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -462,6 +575,7 @@ func TestConnectGitLabCustomHost(t *testing.T) {
 
 	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
 	mOs.EXPECT().ExpandEnv("/internal-repo").Return("/internal-repo").Maybe()
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/internal-repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 
 	mGl.EXPECT().PrView("gitlab.example.com", "internal/repo", 99).Return(forge.PullRequest{}, false, nil)
 	mGl.EXPECT().WorktreeName(99, false).Return("99")
@@ -471,13 +585,14 @@ func TestConnectGitLabCustomHost(t *testing.T) {
 	mGit.EXPECT().WorktreeAdd("/internal-repo", wPath, "feature/99", "origin/main").Return("", nil)
 	mConn.EXPECT().Connect(wPath, model.ConnectOpts{Switch: true, Command: "make setup"}).Return("", nil)
 
-	w := NewWorktree(cfg, mGit, forgeResolver(mGl), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(cfg, mGit, mJj, forgeResolver(mGl), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 99, Repo: "internal/repo", Switch: true})
 	require.NoError(t, err)
 }
 
 func TestConnectGitLabMergeRequest(t *testing.T) {
 	mGit := git.NewMockGit(t)
+	mJj := jj.NewMockJj(t)
 	mGl := forge.NewMockForge(t)
 	mConn := connector.NewMockConnector(t)
 	mBrowser := browser.NewMockBrowser(t)
@@ -502,6 +617,7 @@ func TestConnectGitLabMergeRequest(t *testing.T) {
 
 	mOs.EXPECT().UserHomeDir().Return("/home/me", nil).Maybe()
 	mOs.EXPECT().ExpandEnv("/gitlab-repo").Return("/gitlab-repo").Maybe()
+	mOs.EXPECT().Stat(pathwrap.NewPath().FromSlash("/gitlab-repo/.jj")).Return(nil, os.ErrNotExist).Maybe()
 
 	mGl.EXPECT().PrView("gitlab.com", "inkscape/inkscape", 101).
 		Return(forge.PullRequest{Author: "someone-else"}, true, nil)
@@ -514,7 +630,7 @@ func TestConnectGitLabMergeRequest(t *testing.T) {
 	mGl.EXPECT().PrCheckout(wPath, "gitlab.com", "inkscape/inkscape", 101).Return("", nil)
 	mConn.EXPECT().Connect(wPath, model.ConnectOpts{Switch: true, Command: "gl_setup"}).Return("", nil)
 
-	w := NewWorktree(cfg, mGit, forgeResolver(mGl), mConn, mBrowser, h, mOs, p, testIssueCache(t))
+	w := NewWorktree(cfg, mGit, mJj, forgeResolver(mGl), mConn, mBrowser, h, mOs, p, testIssueCache(t))
 	_, err := w.Connect(model.WorktreeConnectOpts{Number: 101, Repo: "inkscape/inkscape", Switch: true})
 	require.NoError(t, err)
 }

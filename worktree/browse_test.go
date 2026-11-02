@@ -1,6 +1,8 @@
 package worktree
 
 import (
+	"os"
+	"slices"
 	"strconv"
 	"testing"
 
@@ -10,6 +12,7 @@ import (
 	"github.com/joshmedeski/sesh/v2/oswrap"
 	"github.com/joshmedeski/sesh/v2/pathwrap"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -19,7 +22,7 @@ type browseFixture struct {
 	gl *forge.MockForge
 }
 
-func newBrowseFixture(t *testing.T) browseFixture {
+func newBrowseFixture(t *testing.T, jjDirs ...string) browseFixture {
 	mGh := forge.NewMockForge(t)
 	mGl := forge.NewMockForge(t)
 	mOs := oswrap.NewMockOs(t)
@@ -29,7 +32,12 @@ func newBrowseFixture(t *testing.T) browseFixture {
 	mOs.EXPECT().ExpandEnv("/gitlab-repo").Return("/gitlab-repo").Maybe()
 	mOs.EXPECT().ExpandEnv("/internal-repo").Return("/internal-repo").Maybe()
 	mOs.EXPECT().ExpandEnv("/enterprise-repo").Return("/enterprise-repo").Maybe()
-
+	mOs.EXPECT().Stat(mock.Anything).RunAndReturn(func(name string) (os.FileInfo, error) {
+		if slices.Contains(jjDirs, name) {
+			return dirInfo{}, nil
+		}
+		return nil, os.ErrNotExist
+	}).Maybe()
 	cfg := nuConfig()
 	cfg.WorktreeConfigs = append([]model.WorktreeConfig{
 		{Repo: "joshmedeski/dotfiles", Path: "/dotfiles"},
@@ -157,4 +165,27 @@ func TestBrowseURLPrWithoutPullRequest(t *testing.T) {
 	f.gh.EXPECT().PrURL(p.FromSlash("/repo/w/2345")).Return("", false, nil)
 	_, err := f.w.BrowseURL("/repo/w/2345", true)
 	assert.EqualError(t, err, "no pull request found for worktree 2345")
+}
+
+func TestBrowseURLPrJjUsesTheBookmarkPullRequest(t *testing.T) {
+	p := pathwrap.NewPath()
+
+	f := newBrowseFixture(t, p.FromSlash("/repo/w/2345/.jj"))
+	f.gh.EXPECT().WorktreeNumber("2345").Return(2345, false, nil)
+	f.gh.EXPECT().PrURLForHead("github.com", "nutiliti/nutiliti", "jam/2345-1").Return("https://github.com/nutiliti/nutiliti/pull/2400", true, nil)
+	url, err := f.w.BrowseURL("/repo/w/2345/apps", true)
+	require.NoError(t, err)
+	assert.Equal(t, "https://github.com/nutiliti/nutiliti/pull/2400", url)
+}
+
+func TestBrowseURLPrJjFallsBackToThePrNumber(t *testing.T) {
+	p := pathwrap.NewPath()
+
+	f := newBrowseFixture(t, p.FromSlash("/repo/w/200/.jj"))
+	f.gh.EXPECT().WorktreeNumber("200").Return(200, false, nil)
+	f.gh.EXPECT().PrURLForHead("github.com", "nutiliti/nutiliti", "jam/200-1").Return("", false, nil)
+	f.gh.EXPECT().PrView("github.com", "nutiliti/nutiliti", 200).Return(forge.PullRequest{URL: "https://github.com/nutiliti/nutiliti/pull/200"}, true, nil)
+	url, err := f.w.BrowseURL("/repo/w/200", true)
+	require.NoError(t, err)
+	assert.Equal(t, "https://github.com/nutiliti/nutiliti/pull/200", url)
 }

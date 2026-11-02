@@ -102,7 +102,7 @@ func (g *RealGithub) PrView(host string, repo string, number int) (PullRequest, 
 		// gh's pr/issue subcommands have no --hostname flag, so the host is passed
 		// to the --repo flag, which accepts [host/]repo.
 		"--repo", ghRepoArg(host, repo),
-		"--json", "author,closingIssuesReferences,title,body",
+		"--json", "author,closingIssuesReferences,title,body,url,headRefName,headRepository,headRepositoryOwner,isCrossRepository",
 	)
 	if err != nil || out == "" {
 		// Not a PR (or gh reported no such PR); treat as "not found", not an error.
@@ -116,14 +116,32 @@ func (g *RealGithub) PrView(host string, repo string, number int) (PullRequest, 
 		ClosingIssuesReferences []struct {
 			Number int `json:"number"`
 		} `json:"closingIssuesReferences"`
-		Title string `json:"title"`
-		Body  string `json:"body"`
+		Title          string `json:"title"`
+		Body           string `json:"body"`
+		URL            string `json:"url"`
+		HeadRefName    string `json:"headRefName"`
+		HeadRepository struct {
+			Name string `json:"name"`
+		} `json:"headRepository"`
+		HeadRepositoryOwner struct {
+			Login string `json:"login"`
+		} `json:"headRepositoryOwner"`
+		IsCrossRepository bool `json:"isCrossRepository"`
 	}
 	if err := json.Unmarshal([]byte(out), &raw); err != nil {
 		return PullRequest{}, false, err
 	}
 
-	pr := PullRequest{Author: raw.Author.Login, Title: raw.Title, Body: raw.Body}
+	pr := PullRequest{
+		Author:      raw.Author.Login,
+		Title:       raw.Title,
+		Body:        raw.Body,
+		URL:         raw.URL,
+		HeadRefName: raw.HeadRefName,
+		HeadOwner:   raw.HeadRepositoryOwner.Login,
+		HeadRepo:    raw.HeadRepository.Name,
+		IsFork:      raw.IsCrossRepository,
+	}
 	for _, ref := range raw.ClosingIssuesReferences {
 		pr.ClosingIssues = append(pr.ClosingIssues, ref.Number)
 	}
@@ -142,6 +160,19 @@ func (g *RealGithub) PrCheckout(dir string, host string, repo string, number int
 
 func (g *RealGithub) PrURL(dir string) (string, bool, error) {
 	out, err := g.shell.CmdInDir(dir, "gh", "pr", "view", "--json", "url", "--jq", ".url")
+	if err != nil || out == "" {
+		return "", false, nil
+	}
+	return out, true, nil
+}
+
+func (g *RealGithub) PrURLForHead(host string, repo string, head string) (string, bool, error) {
+	// gh's pr/issue subcommands have no --hostname flag, so the host is passed
+	// to the --repo flag, which accepts [host/]repo.
+	out, err := g.shell.Cmd(
+		"gh", "pr", "list", "--repo", ghRepoArg(host, repo), "--head", head,
+		"--state", "all", "--limit", "1", "--json", "url", "--jq", ".[0].url",
+	)
 	if err != nil || out == "" {
 		return "", false, nil
 	}
