@@ -51,7 +51,7 @@ func TestWorktreeResolver(t *testing.T) {
 	entries.Put("github.com/Nutiliti/nutiliti#409", forge.Issue{Number: 409, Title: "Fix bill split rounding", State: "OPEN"})
 	require.NoError(t, issues.Save(entries))
 
-	resolve := worktreeResolver(worktreeTestConfig(), iconTestHome(t), forgeTestResolver(testGithubForge(t)), issues)
+	resolve := WorktreeResolver(worktreeTestConfig(), iconTestHome(t), forgeTestResolver(testGithubForge(t)), issues)
 
 	want := &model.WorktreeInfo{Repo: "Nutiliti/nutiliti", Number: 409, Title: "Fix bill split rounding", State: "OPEN", Name: "409", RefType: model.RefTypeIssue}
 	assert.Equal(t, want, resolve("/home/user/c/nu/w/409"))
@@ -76,7 +76,7 @@ func TestWorktreeResolver_UsesTheForgeDriverKey(t *testing.T) {
 	entries.Put(key, forge.Issue{Number: 409, Title: "written by the worktree command", State: "OPEN"})
 	require.NoError(t, issues.Save(entries))
 
-	resolve := worktreeResolver(worktreeTestConfig(), iconTestHome(t), forgeTestResolver(driver), issues)
+	resolve := WorktreeResolver(worktreeTestConfig(), iconTestHome(t), forgeTestResolver(driver), issues)
 
 	info := resolve("/home/user/c/nu/w/409")
 	require.NotNil(t, info)
@@ -102,7 +102,7 @@ func TestWorktreeResolver_GitlabMergeRequest(t *testing.T) {
 			Repo: "inkscape/inkscape", Path: "~/c/ink", WorktreeDir: "w", Forge: model.ForgeGitlab,
 		}},
 	}
-	resolve := worktreeResolver(config, iconTestHome(t), forgeTestResolver(driver), issues)
+	resolve := WorktreeResolver(config, iconTestHome(t), forgeTestResolver(driver), issues)
 
 	want := &model.WorktreeInfo{
 		Repo:    "inkscape/inkscape",
@@ -121,7 +121,7 @@ func TestWorktreeResolver_GitlabMergeRequest(t *testing.T) {
 }
 
 func TestWorktreeResolver_NilWithoutWorktrees(t *testing.T) {
-	assert.Nil(t, worktreeResolver(model.Config{}, iconTestHome(t), nil, nil))
+	assert.Nil(t, WorktreeResolver(model.Config{}, iconTestHome(t), nil, nil))
 }
 
 func TestFormatJsonResolvesWorktree(t *testing.T) {

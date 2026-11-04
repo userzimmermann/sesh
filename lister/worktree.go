@@ -61,7 +61,7 @@ func (r worktreeRoot) resolveRef(path string) (number int, isExplicitPr bool, na
 	return number, isExplicitPr, name, true
 }
 
-func worktreeResolver(config model.Config, h home.Home, forges forge.Resolver, issues *cache.Namespace[forge.Issue]) func(path string) *model.WorktreeInfo {
+func WorktreeResolver(config model.Config, h home.Home, forges forge.Resolver, issues *cache.Namespace[forge.Issue]) func(path string) *model.WorktreeInfo {
 	roots := worktreeRoots(config, h)
 	if len(roots) == 0 {
 		return nil
